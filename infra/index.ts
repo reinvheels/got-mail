@@ -426,32 +426,35 @@ protocol = "smtp"
 bind = ["[::]:587"]
 protocol = "smtp"
 
-[server.listener.submissions]
-bind = ["[::]:465"]
-protocol = "smtp"
-tls.implicit = true
+# Disabled for testing - requires TLS
+# [server.listener.submissions]
+# bind = ["[::]:465"]
+# protocol = "smtp"
+# tls.implicit = true
 
 [server.listener.imap]
 bind = ["[::]:143"]
 protocol = "imap"
 
-[server.listener.imaps]
-bind = ["[::]:993"]
-protocol = "imap"
-tls.implicit = true
+# Disabled for testing - requires TLS
+# [server.listener.imaps]
+# bind = ["[::]:993"]
+# protocol = "imap"
+# tls.implicit = true
 
 [server.listener.http]
 bind = ["[::]:443", "[::]:80"]
 protocol = "http"
 
-[server.tls]
-enable = true
+# TLS disabled for testing - enable ACME for production
+# [server.tls]
+# enable = true
 
-[acme."letsencrypt"]
-directory = "https://acme-v02.api.letsencrypt.org/directory"
-contact = ["mailto:admin@${domain}"]
-domains = ["${mailDomain}"]
-default = true
+# [acme."letsencrypt"]
+# directory = "https://acme-v02.api.letsencrypt.org/directory"
+# contact = ["mailto:admin@${domain}"]
+# domains = ["${mailDomain}"]
+# default = true
 
 [storage]
 data = "rocksdb"
