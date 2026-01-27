@@ -83,7 +83,7 @@ const dkimRecords = sesDkim.dkimTokens.apply(tokens =>
     tokens.map((token, i) =>
         new aws.route53.Record(`got-mail-dkim-${i}`, {
             zoneId: pulumi.output(hostedZone).apply(z => z.zoneId),
-            name: pulumi.interpolate`${token}._domainkey.${baseDomain}`,
+            name: pulumi.interpolate`${token}._domainkey.${domainName}`,
             type: "CNAME",
             ttl: 600,
             records: [pulumi.interpolate`${token}.dkim.amazonses.com`],
@@ -94,7 +94,7 @@ const dkimRecords = sesDkim.dkimTokens.apply(tokens =>
 // SES domain verification record
 const sesVerificationRecord = new aws.route53.Record("got-mail-ses-verification", {
     zoneId: pulumi.output(hostedZone).apply(z => z.zoneId),
-    name: pulumi.interpolate`_amazonses.${baseDomain}`,
+    name: pulumi.interpolate`_amazonses.${domainName}`,
     type: "TXT",
     ttl: 600,
     records: [sesDomainIdentity.verificationToken],
@@ -309,6 +309,14 @@ const securityGroup = new aws.ec2.SecurityGroup("got-mail-sg", {
             cidrBlocks: ["0.0.0.0/0"],
             description: "IMAPS",
         },
+        // Web admin
+        {
+            protocol: "tcp",
+            fromPort: 8080,
+            toPort: 8080,
+            cidrBlocks: ["0.0.0.0/0"],
+            description: "Web admin",
+        },
     ],
     egress: [
         {
@@ -407,97 +415,82 @@ fi
 
 # Download and install Stalwart Mail Server
 echo "Installing Stalwart Mail Server..."
-curl -sL https://get.stalw.art/install.sh | bash -s -- --component all-in-one
+cd /opt/stalwart
+curl -sL https://get.stalw.art/install.sh | bash -s -- --component all-in-one --path /opt/stalwart
 
-# Wait for initial config to be created
+# Wait for installation to complete
 sleep 5
 
+# Stop Stalwart to reconfigure
+systemctl stop stalwart || true
+
 # Configure Stalwart for this domain
-# The config is at /opt/stalwart/etc/config.toml
-cat > /opt/stalwart/etc/config.toml << 'CONFIGEOF'
+mkdir -p /opt/stalwart/etc /opt/stalwart/logs
+cat > /opt/stalwart/etc/config.toml << CONFIGEOF
 [server]
 hostname = "${mailDomain}"
 
 [server.listener.smtp]
-bind = ["[::]:25"]
+bind = "[::]:25"
 protocol = "smtp"
 
 [server.listener.submission]
-bind = ["[::]:587"]
+bind = "[::]:587"
 protocol = "smtp"
 
-# Disabled for testing - requires TLS
-# [server.listener.submissions]
-# bind = ["[::]:465"]
-# protocol = "smtp"
-# tls.implicit = true
+[server.listener.submissions]
+bind = "[::]:465"
+protocol = "smtp"
+tls.implicit = true
 
 [server.listener.imap]
-bind = ["[::]:143"]
+bind = "[::]:143"
 protocol = "imap"
 
-# Disabled for testing - requires TLS
-# [server.listener.imaps]
-# bind = ["[::]:993"]
-# protocol = "imap"
-# tls.implicit = true
+[server.listener.imaptls]
+bind = "[::]:993"
+protocol = "imap"
+tls.implicit = true
 
 [server.listener.http]
-bind = ["[::]:443", "[::]:80"]
 protocol = "http"
-
-# TLS disabled for testing - enable ACME for production
-# [server.tls]
-# enable = true
-
-# [acme."letsencrypt"]
-# directory = "https://acme-v02.api.letsencrypt.org/directory"
-# contact = ["mailto:admin@${domain}"]
-# domains = ["${mailDomain}"]
-# default = true
+bind = "[::]:8080"
 
 [storage]
 data = "rocksdb"
+fts = "rocksdb"
 blob = "rocksdb"
 lookup = "rocksdb"
 directory = "internal"
 
-[store."rocksdb"]
+[store.rocksdb]
 type = "rocksdb"
 path = "/opt/stalwart/data"
+compression = "lz4"
 
-[directory."internal"]
+[directory.internal]
 type = "internal"
 store = "rocksdb"
 
-[tracer."stdout"]
-type = "stdout"
+[tracer.log]
+type = "log"
 level = "info"
+path = "/opt/stalwart/logs"
+prefix = "stalwart.log"
+rotate = "daily"
 enable = true
 
-[relay]
-hostname = "${mailDomain}"
-
-# Relay outbound mail through SES
-[remote."ses"]
-address = "email-smtp.${region}.amazonaws.com"
-port = 587
-protocol = "smtp"
-tls.implicit = false
-tls.starttls = "require"
-
-# Use IAM role credentials (instance profile) - Stalwart supports this
-[remote."ses".auth]
-mechanism = "plain"
-# SES SMTP credentials need to be generated from IAM - TODO: configure after deployment
+[authentication.fallback-admin]
+user = "admin"
+secret = "changeme123"
 CONFIGEOF
 
 # Set permissions
 chown -R stalwart:stalwart /opt/stalwart
 
 # Enable and start Stalwart
-systemctl enable stalwart-mail
-systemctl start stalwart-mail
+systemctl enable stalwart
+systemctl start stalwart
 
 echo "Stalwart Mail Server deployment completed at $(date)"
 `);
@@ -600,28 +593,28 @@ const mailARecord = new aws.route53.Record("got-mail-a", {
     records: [eip.publicIp],
 });
 
-// MX record (points to mail subdomain)
+// MX record for the mail subdomain
 const mxRecord = new aws.route53.Record("got-mail-mx", {
     zoneId: pulumi.output(hostedZone).apply(z => z.zoneId),
-    name: baseDomain,
+    name: domainName,
     type: "MX",
     ttl: 300,
     records: [pulumi.interpolate`10 ${domainName}.`],
 });
 
-// SPF record (allow SES to send on behalf of domain)
+// SPF record for the mail subdomain
 const spfRecord = new aws.route53.Record("got-mail-spf", {
     zoneId: pulumi.output(hostedZone).apply(z => z.zoneId),
-    name: baseDomain,
+    name: domainName,
     type: "TXT",
     ttl: 300,
     records: ["v=spf1 include:amazonses.com ~all"],
 });
 
-// DMARC record
+// DMARC record for the mail subdomain
 const dmarcRecord = new aws.route53.Record("got-mail-dmarc", {
     zoneId: pulumi.output(hostedZone).apply(z => z.zoneId),
-    name: pulumi.interpolate`_dmarc.${baseDomain}`,
+    name: pulumi.interpolate`_dmarc.${domainName}`,
     type: "TXT",
     ttl: 300,
     records: ["v=DMARC1; p=quarantine; rua=mailto:dmarc@" + domainName],
