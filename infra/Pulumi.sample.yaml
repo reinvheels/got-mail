@@ -1,0 +1,19 @@
+# Got Mail Pulumi Stack Configuration
+# Copy this file to Pulumi.<stack>.yaml (e.g., Pulumi.prod.yaml)
+# Then run: pulumi stack init <stack>
+
+config:
+  # AWS Configuration
+  aws:region: eu-central-1
+  # aws:profile: default  # Optional: AWS CLI profile
+
+  # Domain Configuration (required)
+  # Route53 hosted zone is auto-discovered from the domain name
+  got-mail:domainName: mail.example.com
+
+  # Lambda Configuration
+  # got-mail:memorySize: 512  # Default: 512 MB
+  # got-mail:timeout: 900     # Default: 900 seconds (15 min max)
+
+# Note: Admin password is auto-generated and stored in AWS SSM Parameter Store
+# Retrieve it with: aws ssm get-parameter --name /got-mail/<stack>/admin-password --with-decryption

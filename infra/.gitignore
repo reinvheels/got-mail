@@ -1,0 +1,23 @@
+# Dependencies
+node_modules/
+
+# Build output
+bin/
+
+# Pulumi
+.pulumi/
+Pulumi.*.yaml
+!Pulumi.sample.yaml
+
+# Environment files (legacy, use Pulumi config instead)
+.env*
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

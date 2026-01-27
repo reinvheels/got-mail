@@ -1,0 +1,3 @@
+name: got-mail-infra
+runtime: nodejs
+description: Pulumi project to deploy Got Mail on AWS Lambda with EFS and S3
