@@ -58,7 +58,7 @@ const backupBucket = new aws.s3.Bucket("got-mail-backup", {
         ...commonTags,
         Name: "got-mail-backup",
     },
-}, { retainOnDelete: true });
+}, { retainOnDelete: false });
 
 const backupBucketPublicAccessBlock = new aws.s3.BucketPublicAccessBlock("got-mail-backup-public-access", {
     bucket: backupBucket.id,
@@ -141,7 +141,7 @@ const dataVolume = new aws.ebs.Volume("got-mail-data-volume", {
         ...commonTags,
         Name: "got-mail-data-volume",
     },
-}, { retainOnDelete: true });
+}, { retainOnDelete: false });
 
 // Create an Elastic IP for stable addressing
 const eip = new aws.ec2.Eip("got-mail-eip", {
@@ -623,6 +623,13 @@ aws ec2 wait image-available --image-ids "$AMI_ID"
 echo "$AMI_ID"
 `;
     }),
+    // On destroy: terminate any lingering builder instances attached to the builder SG
+    delete: builderSg.id.apply(sgId => `
+aws ec2 describe-instances \
+    --filters "Name=network-interface.group-id,Values=${sgId}" "Name=instance-state-name,Values=pending,running,stopping,stopped" \
+    --query 'Reservations[].Instances[].InstanceId' --output text \
+| xargs -r aws ec2 terminate-instances --instance-ids || true
+`),
     triggers: [stalwartVersion],
 });
 
