@@ -4,7 +4,7 @@ Personal email service on AWS using EC2 spot instances and SES. Low cost (~$4-5/
 ## Features
 - Send and receive emails using your own domain
 - Full IMAP and SMTP client support (Outlook, Thunderbird, Apple Mail, mobile)
-- Webmail included (Stalwart webmail)
+- No built-in webmail yet (planned for 2026); use Roundcube/SnappyMail or any IMAP client
 - SPF, DKIM, DMARC authentication
 - High deliverability via SES for outbound
 
@@ -16,7 +16,7 @@ Personal email service on AWS using EC2 spot instances and SES. Low cost (~$4-5/
 - Built-in spam filtering (Sieve)
 - Low resource usage (~30-50MB RAM)
 - Web admin console and REST API
-- Webmail client included
+- No webmail yet (planned 2026); web admin console only
 
 ## Architecture
 
@@ -39,7 +39,7 @@ Hybrid approach: EC2 for IMAP/receiving, SES for sending (deliverability).
                          CLIENTS
 ┌─────────────┐     ┌─────────────┐
 │ Mail Client │────►│  Stalwart   │     IMAP (993) / SMTP (465)
-│ (any)       │     │  (EC2 spot) │     + Webmail (443)
+│ (any)       │     │  (EC2 spot) │     + Admin UI (8080)
 └─────────────┘     └─────────────┘
 ```
 
@@ -104,7 +104,7 @@ SES handles TLS for outbound delivery. Stalwart needs certificates for client co
 | SMTP inbound | 25 | STARTTLS (optional) |
 | SMTP submission | 465/587 | Required |
 | IMAP | 993 | Required |
-| Webmail | 443 | Required |
+| Admin UI | 8080 | None (HTTP) |
 
 **Solution: Stalwart built-in ACME**
 
@@ -117,7 +117,7 @@ contact = ["mailto:admin@example.com"]
 domains = ["mail.example.com"]
 ```
 
-Port 80 must be open temporarily for ACME HTTP-01 challenge during cert issuance/renewal.
+Stalwart uses TLS-ALPN-01 challenge via port 443. Port 80 is also open for ACME fallback. Certs are stored in RocksDB on EBS, so they persist across instance replacements.
 
 ### Spot Interruption Recovery
 
@@ -146,13 +146,13 @@ For personal email, this is acceptable - mail queues retry.
 
 Pulumi (TypeScript) in `infra/` directory. Package manager: pnpm.
 
-### Components to create
-- VPC with public subnet
-- EC2 spot instance (ASG size=1) with Stalwart
-- EBS volume for data persistence
+### Components
+- EC2 spot instance (ASG size=1) with Stalwart in default VPC
+- EBS volume for data persistence (retainOnDelete)
 - Elastic IP
-- Security group (25, 80, 143, 443, 465, 587, 993)
+- Security group (25, 80, 143, 443, 465, 587, 993, 8080)
 - SES domain identity + DKIM
+- IAM user with SMTP credentials for SES relay
 - Route53 records (MX, SPF, DKIM, DMARC)
 - S3 bucket for backups
-- IAM role for EC2 (SES send, S3 backup)
+- IAM role for EC2 (EIP association, EBS attach, S3 backup)
