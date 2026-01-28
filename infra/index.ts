@@ -71,7 +71,7 @@ const backupBucketPublicAccessBlock = new aws.s3.BucketPublicAccessBlock("got-ma
 // =============================================================================
 
 const sesDomainIdentity = new aws.ses.DomainIdentity("got-mail-ses-domain", {
-    domain: baseDomain,
+    domain: domainName,
 });
 
 const sesDkim = new aws.ses.DomainDkim("got-mail-ses-dkim", {
@@ -90,6 +90,27 @@ const dkimRecords = sesDkim.dkimTokens.apply(tokens =>
         })
     )
 );
+
+// SES SMTP credentials (IAM user for Stalwart to relay through SES)
+const sesSmtpUser = new aws.iam.User("got-mail-ses-smtp-user", {
+    name: "got-mail-ses-smtp",
+});
+
+new aws.iam.UserPolicy("got-mail-ses-smtp-policy", {
+    user: sesSmtpUser.name,
+    policy: JSON.stringify({
+        Version: "2012-10-17",
+        Statement: [{
+            Effect: "Allow",
+            Action: ["ses:SendRawEmail", "ses:SendEmail"],
+            Resource: "*",
+        }],
+    }),
+});
+
+const sesSmtpAccessKey = new aws.iam.AccessKey("got-mail-ses-smtp-key", {
+    user: sesSmtpUser.name,
+});
 
 // SES domain verification record
 const sesVerificationRecord = new aws.route53.Record("got-mail-ses-verification", {
@@ -340,7 +361,9 @@ const userData = pulumi.all([
     currentRegion.then(r => r.name),
     eip.allocationId,
     dataVolume.id,
-]).apply(([mailDomain, domain, region, eipAllocationId, dataVolumeId]) => `#!/bin/bash
+    sesSmtpAccessKey.id,
+    sesSmtpAccessKey.sesSmtpPasswordV4,
+]).apply(([mailDomain, domain, region, eipAllocationId, dataVolumeId, smtpUser, smtpPassword]) => `#!/bin/bash
 set -ex
 
 exec > >(tee /var/log/user-data.log) 2>&1
@@ -479,6 +502,23 @@ path = "/opt/stalwart/logs"
 prefix = "stalwart.log"
 rotate = "daily"
 enable = true
+
+[queue.route.ses]
+type = "relay"
+address = "email-smtp.${region}.amazonaws.com"
+port = 587
+protocol = "smtp"
+
+[queue.route.ses.tls]
+implicit = false
+allow-invalid-certs = false
+
+[queue.route.ses.auth]
+username = "${smtpUser}"
+secret = "${smtpPassword}"
+
+[queue.strategy]
+route = "'ses'"
 
 [authentication.fallback-admin]
 user = "admin"
