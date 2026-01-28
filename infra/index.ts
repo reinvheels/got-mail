@@ -494,7 +494,7 @@ enable = true
 [acme."letsencrypt"]
 directory = "https://acme-v02.api.letsencrypt.org/directory"
 contact = ["mailto:admin@${domain}"]
-domains = ["${mailDomain}"]
+domains = ["${mailDomain}", "autoconfig.${mailDomain}", "autodiscover.${mailDomain}"]
 default = true
 
 [storage]
@@ -676,6 +676,48 @@ const dmarcRecord = new aws.route53.Record("got-mail-dmarc", {
     type: "TXT",
     ttl: 300,
     records: ["v=DMARC1; p=quarantine; rua=mailto:dmarc@" + domainName],
+});
+
+// Autoconfig/Autodiscover CNAME records (Thunderbird, Outlook)
+new aws.route53.Record("got-mail-autoconfig", {
+    zoneId: pulumi.output(hostedZone).apply(z => z.zoneId),
+    name: pulumi.interpolate`autoconfig.${domainName}`,
+    type: "CNAME",
+    ttl: 300,
+    records: [domainName],
+});
+
+new aws.route53.Record("got-mail-autodiscover", {
+    zoneId: pulumi.output(hostedZone).apply(z => z.zoneId),
+    name: pulumi.interpolate`autodiscover.${domainName}`,
+    type: "CNAME",
+    ttl: 300,
+    records: [domainName],
+});
+
+// SRV records for mail client auto-setup (RFC 6186)
+new aws.route53.Record("got-mail-srv-imaps", {
+    zoneId: pulumi.output(hostedZone).apply(z => z.zoneId),
+    name: pulumi.interpolate`_imaps._tcp.${domainName}`,
+    type: "SRV",
+    ttl: 300,
+    records: [pulumi.interpolate`0 1 993 ${domainName}.`],
+});
+
+new aws.route53.Record("got-mail-srv-submissions", {
+    zoneId: pulumi.output(hostedZone).apply(z => z.zoneId),
+    name: pulumi.interpolate`_submissions._tcp.${domainName}`,
+    type: "SRV",
+    ttl: 300,
+    records: [pulumi.interpolate`0 1 465 ${domainName}.`],
+});
+
+new aws.route53.Record("got-mail-srv-submission", {
+    zoneId: pulumi.output(hostedZone).apply(z => z.zoneId),
+    name: pulumi.interpolate`_submission._tcp.${domainName}`,
+    type: "SRV",
+    ttl: 300,
+    records: [pulumi.interpolate`0 1 587 ${domainName}.`],
 });
 
 // =============================================================================
