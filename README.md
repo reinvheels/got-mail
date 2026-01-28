@@ -6,7 +6,6 @@ Personal email service on AWS using EC2 spot instances and [Stalwart Mail Server
 
 - Send and receive emails using your own domain
 - Full IMAP and SMTP client support (any mail client)
-- Webmail included
 - SPF, DKIM, DMARC authentication
 - High deliverability via SES for outbound
 

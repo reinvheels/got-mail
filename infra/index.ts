@@ -475,9 +475,27 @@ bind = "[::]:993"
 protocol = "imap"
 tls.implicit = true
 
+[server.listener.https]
+protocol = "http"
+bind = "[::]:443"
+tls.implicit = true
+
 [server.listener.http]
 protocol = "http"
 bind = "[::]:8080"
+
+[server.listener.acme]
+protocol = "http"
+bind = "[::]:80"
+
+[server.tls]
+enable = true
+
+[acme."letsencrypt"]
+directory = "https://acme-v02.api.letsencrypt.org/directory"
+contact = ["mailto:admin@${domain}"]
+domains = ["${mailDomain}"]
+default = true
 
 [storage]
 data = "rocksdb"
