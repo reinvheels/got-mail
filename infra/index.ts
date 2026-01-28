@@ -1,5 +1,6 @@
 import * as pulumi from "@pulumi/pulumi";
 import * as aws from "@pulumi/aws";
+import * as command from "@pulumi/command";
 
 // Stack configuration
 const stackName = pulumi.getStack();
@@ -10,6 +11,7 @@ const domainName = config.require("domainName");
 const instanceType = config.get("instanceType") || "t4g.micro";
 const keyName = config.get("keyName");
 const openSshPort = config.getBoolean("openSshPort") || false;
+const stalwartVersion = config.get("stalwartVersion") || "latest";
 
 // Common tags for cost allocation and resource identification
 const commonTags = {
@@ -354,18 +356,63 @@ const securityGroup = new aws.ec2.SecurityGroup("got-mail-sg", {
     },
 });
 
-// User data script to install Stalwart Mail Server
-const userData = pulumi.all([
+// =============================================================================
+// AMI Builder (bakes Stalwart into a custom AMI)
+// =============================================================================
+
+// Builder security group - egress only (no inbound needed)
+const builderSg = new aws.ec2.SecurityGroup("got-mail-builder-sg", {
+    description: "Builder instance - egress only",
+    egress: [{
+        protocol: "-1",
+        fromPort: 0,
+        toPort: 0,
+        cidrBlocks: ["0.0.0.0/0"],
+        description: "Allow all outbound traffic",
+    }],
+    tags: { ...commonTags, Name: "got-mail-builder-sg" },
+});
+
+// Builder IAM role - needs ec2:CreateTags to signal build completion
+const builderRole = new aws.iam.Role("got-mail-builder-role", {
+    assumeRolePolicy: JSON.stringify({
+        Version: "2012-10-17",
+        Statement: [{
+            Action: "sts:AssumeRole",
+            Effect: "Allow",
+            Principal: { Service: "ec2.amazonaws.com" },
+        }],
+    }),
+    tags: { ...commonTags, Name: "got-mail-builder-role" },
+});
+
+new aws.iam.RolePolicy("got-mail-builder-policy", {
+    role: builderRole.id,
+    policy: JSON.stringify({
+        Version: "2012-10-17",
+        Statement: [{
+            Sid: "AllowCreateTags",
+            Effect: "Allow",
+            Action: "ec2:CreateTags",
+            Resource: "arn:aws:ec2:*:*:instance/*",
+        }],
+    }),
+});
+
+const builderProfile = new aws.iam.InstanceProfile("got-mail-builder-profile", {
+    role: builderRole.name,
+    tags: { ...commonTags, Name: "got-mail-builder-profile" },
+});
+
+// Builder user data - installs Stalwart, writes config, and signals completion
+const builderUserData = pulumi.all([
     domainName,
     baseDomain,
     currentRegion.then(r => r.name),
-    eip.allocationId,
-    dataVolume.id,
     sesSmtpAccessKey.id,
     sesSmtpAccessKey.sesSmtpPasswordV4,
-]).apply(([mailDomain, domain, region, eipAllocationId, dataVolumeId, smtpUser, smtpPassword]) => `#!/bin/bash
+]).apply(([mailDomain, domain, region, smtpUser, smtpPassword]) => `#!/bin/bash
 set -ex
-
 exec > >(tee /var/log/user-data.log) 2>&1
 
 # Get instance metadata
@@ -374,80 +421,29 @@ INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.2
 AVAILABILITY_ZONE=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/placement/availability-zone)
 REGION=$(echo $AVAILABILITY_ZONE | sed 's/[a-z]$//')
 
-echo "Instance ID: $INSTANCE_ID"
-echo "Region: $REGION"
+echo "Builder instance: $INSTANCE_ID in $REGION"
+echo "Building Stalwart version: ${stalwartVersion}"
 
-# Associate Elastic IP to this instance
-echo "Associating Elastic IP..."
-aws ec2 associate-address --instance-id $INSTANCE_ID --allocation-id ${eipAllocationId} --region $REGION || true
-
-# Attach EBS data volume to this instance
-echo "Attaching EBS data volume..."
-CURRENT_ATTACHMENT=$(aws ec2 describe-volumes --volume-ids ${dataVolumeId} --region $REGION --query 'Volumes[0].Attachments[0].InstanceId' --output text)
-if [ "$CURRENT_ATTACHMENT" != "None" ] && [ "$CURRENT_ATTACHMENT" != "$INSTANCE_ID" ]; then
-    echo "Volume attached to $CURRENT_ATTACHMENT, detaching..."
-    aws ec2 detach-volume --volume-id ${dataVolumeId} --region $REGION --force || true
-    sleep 10
-fi
-aws ec2 attach-volume --volume-id ${dataVolumeId} --instance-id $INSTANCE_ID --device /dev/sdf --region $REGION || true
-
-# Update system
+# Update system packages
 dnf update -y
 
-# Wait for EBS volume to be attached
-echo "Waiting for EBS data volume..."
-WAIT_COUNT=0
-while true; do
-    if [ -b /dev/nvme1n1 ]; then
-        DATA_DEVICE=/dev/nvme1n1
-        break
-    elif [ -b /dev/sdf ]; then
-        DATA_DEVICE=/dev/sdf
-        break
-    elif [ -b /dev/xvdf ]; then
-        DATA_DEVICE=/dev/xvdf
-        break
-    fi
-    WAIT_COUNT=$((WAIT_COUNT + 1))
-    if [ $WAIT_COUNT -gt 60 ]; then
-        echo "Timeout waiting for EBS volume"
-        exit 1
-    fi
-    sleep 1
-done
-echo "Found data volume at $DATA_DEVICE"
-
-# Create mount point
-mkdir -p /opt/stalwart
-
-# Try to mount the volume - if it fails, format it (first boot only)
-if mount $DATA_DEVICE /opt/stalwart 2>/dev/null; then
-    echo "Mounted existing data volume"
-else
-    echo "Mount failed - formatting new data volume..."
-    mkfs.ext4 $DATA_DEVICE
-    mount $DATA_DEVICE /opt/stalwart
-    touch /opt/stalwart/.stalwart-volume
-    echo "Created new Stalwart data volume"
-fi
-
-# Add to fstab for persistence across reboots
-if ! grep -q "/opt/stalwart" /etc/fstab; then
-    echo "$DATA_DEVICE /opt/stalwart ext4 defaults,nofail 0 2" >> /etc/fstab
-fi
-
 # Download and install Stalwart Mail Server
+# The install script creates: binary at /opt/stalwart/bin/stalwart,
+# systemd unit (stalwart.service), and stalwart user/group
 echo "Installing Stalwart Mail Server..."
-cd /opt/stalwart
-curl -sL https://get.stalw.art/install.sh | bash -s -- --component all-in-one --path /opt/stalwart
+curl -sL https://get.stalw.art/install.sh | bash -s -- /opt/stalwart
 
-# Wait for installation to complete
-sleep 5
+# Verify binary exists
+if [ ! -f /opt/stalwart/bin/stalwart ]; then
+    echo "ERROR: Stalwart binary not found at /opt/stalwart/bin/stalwart"
+    aws ec2 create-tags --resources $INSTANCE_ID --tags Key=BuildStatus,Value=failed --region $REGION
+    exit 1
+fi
 
-# Stop Stalwart to reconfigure
-systemctl stop stalwart || true
+# Stop Stalwart if the install script started it (we just want it installed, not running)
+systemctl stop stalwart 2>/dev/null || true
 
-# Configure Stalwart for this domain
+# Write Stalwart configuration (overwrite install script defaults)
 mkdir -p /opt/stalwart/etc /opt/stalwart/logs
 cat > /opt/stalwart/etc/config.toml << CONFIGEOF
 [server]
@@ -543,14 +539,194 @@ user = "admin"
 secret = "changeme123"
 CONFIGEOF
 
-# Set permissions
 chown -R stalwart:stalwart /opt/stalwart
 
-# Enable and start Stalwart
-systemctl enable stalwart
+echo "Build complete, signaling..."
+aws ec2 create-tags --resources $INSTANCE_ID --tags Key=BuildStatus,Value=complete --region $REGION
+echo "Builder finished at $(date)"
+`);
+
+// Build AMI via CLI: launch instance, wait for build, create AMI, terminate.
+// Nothing lingers in Pulumi state — only the AMI ID output matters.
+const buildAmi = new command.local.Command("build-stalwart-ami", {
+    create: pulumi.all([
+        ami.then(a => a.id),
+        builderSg.id,
+        builderProfile.name,
+        builderUserData,
+    ]).apply(([baseAmiId, sgId, profileName, userData]) => {
+        const userDataB64 = Buffer.from(userData).toString("base64");
+        const amiNamePrefix = `got-mail-stalwart-${stalwartVersion}`;
+        // Shell script that outputs the AMI ID as the last line (captured by Pulumi)
+        return `
+set -e
+
+echo "Launching builder instance..."
+INSTANCE_ID=$(aws ec2 run-instances \
+    --image-id ${baseAmiId} \
+    --instance-type ${instanceType} \
+    --security-group-ids ${sgId} \
+    --iam-instance-profile Name=${profileName} \
+    --user-data ${userDataB64} \
+    --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=got-mail-ami-builder},{Key=Project,Value=got-mail},{Key=ManagedBy,Value=pulumi}]' \
+    --query 'Instances[0].InstanceId' --output text)
+
+echo "Builder instance: $INSTANCE_ID"
+
+# Ensure cleanup on failure
+cleanup() {
+    echo "Terminating builder instance $INSTANCE_ID..." >&2
+    aws ec2 terminate-instances --instance-ids "$INSTANCE_ID" > /dev/null 2>&1 || true
+}
+trap cleanup EXIT
+
+# Wait for build completion (up to 30 minutes)
+echo "Waiting for build to complete..."
+for i in $(seq 1 120); do
+    STATUS=$(aws ec2 describe-tags \
+        --filters "Name=resource-id,Values=$INSTANCE_ID" "Name=key,Values=BuildStatus" \
+        --query "Tags[0].Value" --output text 2>/dev/null || echo "")
+    if [ "$STATUS" = "complete" ]; then
+        echo "Build completed successfully"
+        break
+    fi
+    if [ "$STATUS" = "failed" ]; then
+        echo "Build failed!" >&2
+        exit 1
+    fi
+    if [ "$i" = "120" ]; then
+        echo "Timeout waiting for builder" >&2
+        exit 1
+    fi
+    sleep 15
+done
+
+# Stop instance before creating AMI (cleaner snapshot)
+echo "Stopping builder instance..."
+aws ec2 stop-instances --instance-ids "$INSTANCE_ID" > /dev/null
+aws ec2 wait instance-stopped --instance-ids "$INSTANCE_ID"
+
+# Create AMI
+echo "Creating AMI..."
+AMI_NAME="${amiNamePrefix}-$(date +%s)"
+AMI_ID=$(aws ec2 create-image \
+    --instance-id "$INSTANCE_ID" \
+    --name "$AMI_NAME" \
+    --description "Got Mail - Stalwart ${stalwartVersion}" \
+    --tag-specifications 'ResourceType=image,Tags=[{Key=Name,Value=got-mail-stalwart-ami},{Key=Project,Value=got-mail},{Key=StalwartVersion,Value=${stalwartVersion}}]' \
+    --query 'ImageId' --output text)
+
+echo "Waiting for AMI $AMI_ID to become available..."
+aws ec2 wait image-available --image-ids "$AMI_ID"
+
+# trap will terminate the builder instance
+echo "$AMI_ID"
+`;
+    }),
+    triggers: [stalwartVersion],
+});
+
+// Extract the AMI ID from the last line of command output
+const customAmiId = buildAmi.stdout.apply(out => {
+    const match = out.match(/^(ami-[a-z0-9]+)$/m);
+    if (!match) throw new Error(`Could not extract AMI ID from build output: ${out}`);
+    return match[1];
+});
+
+// =============================================================================
+// Runtime User Data (simplified - Stalwart already baked into AMI)
+// =============================================================================
+
+// Runtime user data - only EIP/EBS attachment and starting Stalwart (binary + config baked in AMI)
+const userData = pulumi.all([
+    eip.allocationId,
+    dataVolume.id,
+]).apply(([eipAllocationId, dataVolumeId]) => `#!/bin/bash
+set -ex
+
+exec > >(tee /var/log/user-data.log) 2>&1
+
+# Get instance metadata
+TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
+AVAILABILITY_ZONE=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/placement/availability-zone)
+REGION=$(echo $AVAILABILITY_ZONE | sed 's/[a-z]$//')
+
+echo "Instance ID: $INSTANCE_ID"
+echo "Region: $REGION"
+
+# Associate Elastic IP to this instance
+echo "Associating Elastic IP..."
+aws ec2 associate-address --instance-id $INSTANCE_ID --allocation-id ${eipAllocationId} --region $REGION || true
+
+# Attach EBS data volume to this instance
+echo "Attaching EBS data volume..."
+CURRENT_ATTACHMENT=$(aws ec2 describe-volumes --volume-ids ${dataVolumeId} --region $REGION --query 'Volumes[0].Attachments[0].InstanceId' --output text)
+if [ "$CURRENT_ATTACHMENT" != "None" ] && [ "$CURRENT_ATTACHMENT" != "$INSTANCE_ID" ]; then
+    echo "Volume attached to $CURRENT_ATTACHMENT, detaching..."
+    aws ec2 detach-volume --volume-id ${dataVolumeId} --region $REGION --force || true
+    sleep 10
+fi
+aws ec2 attach-volume --volume-id ${dataVolumeId} --instance-id $INSTANCE_ID --device /dev/sdf --region $REGION || true
+
+# Wait for EBS volume to be attached
+echo "Waiting for EBS data volume..."
+WAIT_COUNT=0
+while true; do
+    if [ -b /dev/nvme1n1 ]; then
+        DATA_DEVICE=/dev/nvme1n1
+        break
+    elif [ -b /dev/sdf ]; then
+        DATA_DEVICE=/dev/sdf
+        break
+    elif [ -b /dev/xvdf ]; then
+        DATA_DEVICE=/dev/xvdf
+        break
+    fi
+    WAIT_COUNT=$((WAIT_COUNT + 1))
+    if [ $WAIT_COUNT -gt 60 ]; then
+        echo "Timeout waiting for EBS volume"
+        exit 1
+    fi
+    sleep 1
+done
+echo "Found data volume at $DATA_DEVICE"
+
+# Mount EBS volume for Stalwart persistent data
+# Config and binary are baked into the AMI at /opt/stalwart/{etc,logs}
+# EBS holds RocksDB data that must survive instance replacements
+mkdir -p /mnt/stalwart-ebs /opt/stalwart/data
+
+if mount $DATA_DEVICE /mnt/stalwart-ebs 2>/dev/null; then
+    echo "Mounted EBS volume"
+    # Migration: if old layout (data/ is a subdirectory on EBS), bind-mount it
+    if [ -d /mnt/stalwart-ebs/data ]; then
+        echo "Found existing data directory on EBS volume"
+        mount --bind /mnt/stalwart-ebs/data /opt/stalwart/data
+    else
+        # Fresh EBS or flat layout - use the whole volume as data dir
+        umount /mnt/stalwart-ebs
+        mount $DATA_DEVICE /opt/stalwart/data
+    fi
+else
+    echo "Mount failed - formatting new data volume..."
+    mkfs.ext4 $DATA_DEVICE
+    mount $DATA_DEVICE /opt/stalwart/data
+    echo "Created new Stalwart data volume"
+fi
+
+# Add to fstab for persistence across reboots
+if ! grep -q "/opt/stalwart/data" /etc/fstab; then
+    echo "$DATA_DEVICE /opt/stalwart/data ext4 defaults,nofail 0 2" >> /etc/fstab
+fi
+
+# Ensure correct ownership
+chown -R stalwart:stalwart /opt/stalwart
+
+# Start Stalwart (binary, config, and systemd unit already baked in AMI)
 systemctl start stalwart
 
-echo "Stalwart Mail Server deployment completed at $(date)"
+echo "Stalwart Mail Server started at $(date)"
 `);
 
 // Get default VPC for ASG
@@ -570,7 +746,7 @@ const asgSubnetId = pulumi.all([defaultVpc, dataAvailabilityZone]).apply(async (
 
 // Create Launch Template for ASG
 const launchTemplate = new aws.ec2.LaunchTemplate("got-mail-launch-template", {
-    imageId: ami.then(a => a.id),
+    imageId: customAmiId,
     instanceType: instanceType,
     keyName: keyName,
     vpcSecurityGroupIds: [securityGroup.id],
@@ -731,3 +907,5 @@ export const dataVolumeId = dataVolume.id;
 export const backupBucketName = backupBucket.bucket;
 export const sesVerificationStatus = sesDomainIdentity.verificationToken;
 export const hostedZoneId = pulumi.output(hostedZone).apply(z => z.zoneId);
+export const amiId = customAmiId;
+export const stalwartVersionExport = stalwartVersion;
