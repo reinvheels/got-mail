@@ -96,6 +96,7 @@ const dkimRecords = sesDkim.dkimTokens.apply(tokens =>
 // SES SMTP credentials (IAM user for Stalwart to relay through SES)
 const sesSmtpUser = new aws.iam.User("got-mail-ses-smtp-user", {
     name: "got-mail-ses-smtp",
+    tags: { ...commonTags, Name: "got-mail-ses-smtp" },
 });
 
 new aws.iam.UserPolicy("got-mail-ses-smtp-policy", {
@@ -532,7 +533,7 @@ username = "${smtpUser}"
 secret = "${smtpPassword}"
 
 [queue.strategy]
-route = "'ses'"
+route = [ { if = "is_local_domain('', rcpt_domain)", then = "'local'" }, { else = "'ses'" } ]
 
 [authentication.fallback-admin]
 user = "admin"
@@ -802,9 +803,9 @@ const launchTemplate = new aws.ec2.LaunchTemplate("got-mail-launch-template", {
 // Create Auto Scaling Group for automatic recovery
 const asg = new aws.autoscaling.Group("got-mail-asg", {
     name: "got-mail-asg",
-    minSize: 1,
+    minSize: 0,
     maxSize: 1,
-    desiredCapacity: 1,
+    desiredCapacity: 0,
     vpcZoneIdentifiers: [asgSubnetId],
     launchTemplate: {
         id: launchTemplate.id,
