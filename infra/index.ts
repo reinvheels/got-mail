@@ -1,6 +1,8 @@
 import * as pulumi from "@pulumi/pulumi";
 import * as aws from "@pulumi/aws";
 import * as command from "@pulumi/command";
+import * as random from "@pulumi/random";
+import { Domain as StalwartDomain, Account as StalwartAccount } from "./stalwart";
 
 // Stack configuration
 const stackName = pulumi.getStack();
@@ -12,6 +14,16 @@ const instanceType = config.get("instanceType") || "t4g.micro";
 const keyName = config.get("keyName");
 const openSshPort = config.getBoolean("openSshPort") || false;
 const stalwartVersion = config.get("stalwartVersion") || "latest";
+
+interface MailAccountConfig {
+    name: string;
+    email: string;
+    displayName?: string;
+    roles?: string[];
+}
+
+const mailDomains = config.requireObject<string[]>("mailDomains");
+const mailAccounts = config.requireObject<MailAccountConfig[]>("mailAccounts");
 
 // Common tags for cost allocation and resource identification
 const commonTags = {
@@ -358,6 +370,24 @@ const securityGroup = new aws.ec2.SecurityGroup("got-mail-sg", {
 });
 
 // =============================================================================
+// Stalwart Admin Password (needed by AMI builder and API calls)
+// =============================================================================
+
+const ssmPrefix = `/got-mail/${stackName}`;
+
+const adminPassword = new random.RandomPassword("stalwart-admin-password", {
+    length: 32,
+    special: true,
+});
+
+const adminPasswordSsm = new aws.ssm.Parameter("stalwart-admin-password-ssm", {
+    name: `${ssmPrefix}/stalwart/admin-password`,
+    type: aws.ssm.ParameterType.SecureString,
+    value: adminPassword.result,
+    tags: commonTags,
+});
+
+// =============================================================================
 // AMI Builder (bakes Stalwart into a custom AMI)
 // =============================================================================
 
@@ -412,7 +442,8 @@ const builderUserData = pulumi.all([
     currentRegion.then(r => r.name),
     sesSmtpAccessKey.id,
     sesSmtpAccessKey.sesSmtpPasswordV4,
-]).apply(([mailDomain, domain, region, smtpUser, smtpPassword]) => `#!/bin/bash
+    adminPassword.result,
+]).apply(([mailDomain, domain, region, smtpUser, smtpPassword, adminPass]) => `#!/bin/bash
 set -ex
 exec > >(tee /var/log/user-data.log) 2>&1
 
@@ -537,7 +568,7 @@ route = [ { if = "is_local_domain('', rcpt_domain)", then = "'local'" }, { else 
 
 [authentication.fallback-admin]
 user = "admin"
-secret = "changeme123"
+secret = "${adminPass}"
 CONFIGEOF
 
 chown -R stalwart:stalwart /opt/stalwart
@@ -773,7 +804,7 @@ const launchTemplate = new aws.ec2.LaunchTemplate("got-mail-launch-template", {
     blockDeviceMappings: [{
         deviceName: "/dev/xvda",
         ebs: {
-            volumeSize: 8,
+            volumeSize: 30,
             volumeType: "gp3",
             deleteOnTermination: "true",
         },
@@ -805,7 +836,7 @@ const asg = new aws.autoscaling.Group("got-mail-asg", {
     name: "got-mail-asg",
     minSize: 0,
     maxSize: 1,
-    desiredCapacity: 0,
+    desiredCapacity: 1,
     vpcZoneIdentifiers: [asgSubnetId],
     launchTemplate: {
         id: launchTemplate.id,
@@ -903,6 +934,45 @@ new aws.route53.Record("got-mail-srv-submission", {
     ttl: 300,
     records: [pulumi.interpolate`0 1 587 ${domainName}.`],
 });
+
+// =============================================================================
+// Stalwart Mail Domains & Accounts
+// =============================================================================
+
+const stalwartBaseUrl = pulumi.interpolate`http://${eip.publicIp}:8080`;
+const stalwartAuth = { baseUrl: stalwartBaseUrl, username: "admin", password: adminPassword.result };
+
+// --- Domains ---
+const stalwartDomains = mailDomains.map(domain => {
+    return new StalwartDomain(`stalwart-domain-${domain}`, {
+        ...stalwartAuth,
+        domainName: domain,
+    }, { dependsOn: [asg] });
+});
+
+// --- Accounts ---
+for (const account of mailAccounts) {
+    const password = new random.RandomPassword(`stalwart-password-${account.name}`, {
+        length: 24,
+        special: true,
+    });
+
+    new aws.ssm.Parameter(`stalwart-password-ssm-${account.name}`, {
+        name: `${ssmPrefix}/stalwart/accounts/${account.name}/password`,
+        type: aws.ssm.ParameterType.SecureString,
+        value: password.result,
+        tags: commonTags,
+    });
+
+    new StalwartAccount(`stalwart-account-${account.name}`, {
+        ...stalwartAuth,
+        accountName: account.name,
+        description: account.displayName || "",
+        accountPassword: password.result,
+        emails: [account.email],
+        roles: account.roles || ["user"],
+    }, { dependsOn: stalwartDomains });
+}
 
 // =============================================================================
 // Exports
