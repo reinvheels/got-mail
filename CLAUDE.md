@@ -146,13 +146,49 @@ For personal email, this is acceptable - mail queues retry.
 
 Pulumi (TypeScript) in `infra/` directory. Package manager: pnpm.
 
+### Stack Config (`puc` / SSM)
+
+Stack config is managed via `puc` (pulumi-config) and stored in AWS SSM, not in git.
+
+```bash
+puc env           # print PULUMI_BACKEND_URL and PULUMI_CONFIG_PASSPHRASE
+puc pull prod     # pull config to Pulumi.prod.yaml
+puc push prod     # push config to SSM
+```
+
+Key config values:
+- `got-mail:domainName` — primary mail server hostname (e.g. `gotmx.gothub.io`)
+- `got-mail:mailDomains` — list of mail domains to create in Stalwart
+- `got-mail:mailAccounts` — list of mailbox accounts (name, email, displayName, roles)
+- `got-mail:keyName` — EC2 key pair name for SSH access
+- `got-mail:openSshPort` — whether to open port 22
+
+### Passwords & Secrets
+
+All passwords are generated via `@pulumi/random` and stored in SSM:
+
+```
+/got-mail/{stack}/stalwart/admin-password           → Stalwart admin password (32 chars)
+/got-mail/{stack}/stalwart/accounts/{name}/password  → account password (24 chars)
+```
+
+The admin password is also baked into the AMI config at build time.
+
 ### Components
 - EC2 spot instance (ASG size=1) with Stalwart in default VPC
+- Custom AMI baked via builder instance (Stalwart binary + config pre-installed)
 - EBS volume for data persistence (retainOnDelete)
 - Elastic IP
 - Security group (25, 80, 143, 443, 465, 587, 993, 8080)
 - SES domain identity + DKIM
 - IAM user with SMTP credentials for SES relay
-- Route53 records (MX, SPF, DKIM, DMARC)
+- Route53 records (MX, SPF, DKIM, DMARC, autodiscover, autoconfig, SRV)
 - S3 bucket for backups
 - IAM role for EC2 (EIP association, EBS attach, S3 backup)
+- Stalwart dynamic provider (`stalwart.ts`) — Pulumi CRUD for domains and accounts via REST API
+
+### Files
+- `index.ts` — main infrastructure (AWS resources, AMI builder, Stalwart resources)
+- `stalwart.ts` — Pulumi dynamic provider for Stalwart Domain and Account resources
+- `Pulumi.yaml` — project config
+- `Pulumi.prod.yaml` — stack config (gitignored, managed via `puc`)
