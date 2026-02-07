@@ -110,6 +110,9 @@ const domainProvider: pulumi.dynamic.ResourceProvider = {
         const conn = getConn(props);
         try {
             const resp = await stalwartFetch(conn, "GET", `/api/principal/${encodeURIComponent(id)}`);
+            if (resp.error === "notFound" || !resp.data) {
+                return { id: "", props: undefined as any };
+            }
             return {
                 id,
                 props: {
@@ -120,8 +123,8 @@ const domainProvider: pulumi.dynamic.ResourceProvider = {
                 },
             };
         } catch (e: any) {
-            if (e.message?.includes("404")) {
-                return { id, props: {} };
+            if (e.message?.includes("404") || e.message?.includes("notFound")) {
+                return { id: "", props: undefined as any };
             }
             throw e;
         }
@@ -222,9 +225,10 @@ interface AccountState {
 const accountProvider: pulumi.dynamic.ResourceProvider = {
     async create(inputs: AccountState): Promise<pulumi.dynamic.CreateResult> {
         const conn = getConn(inputs);
+        const principalName = inputs.emails[0];
         const resp = await stalwartFetch(conn, "POST", "/api/principal", {
             type: "individual",
-            name: inputs.accountName,
+            name: principalName,
             description: inputs.description || "",
             secrets: [inputs.accountPassword],
             emails: inputs.emails,
@@ -239,7 +243,7 @@ const accountProvider: pulumi.dynamic.ResourceProvider = {
             externalMembers: [],
         });
         return {
-            id: inputs.accountName,
+            id: principalName,
             outs: { ...inputs, stalwartId: resp.data },
         };
     },
@@ -248,12 +252,15 @@ const accountProvider: pulumi.dynamic.ResourceProvider = {
         const conn = getConn(props);
         try {
             const resp = await stalwartFetch(conn, "GET", `/api/principal/${encodeURIComponent(id)}`);
+            if (resp.error === "notFound" || !resp.data) {
+                return { id: "", props: undefined as any };
+            }
             const d = resp.data;
             return {
                 id,
                 props: {
                     ...props,
-                    accountName: d.name,
+                    accountName: props.accountName,
                     description: d.description || "",
                     // Keep the input password — we can't reverse the hash
                     accountPassword: props.accountPassword,
@@ -265,8 +272,8 @@ const accountProvider: pulumi.dynamic.ResourceProvider = {
                 },
             };
         } catch (e: any) {
-            if (e.message?.includes("404")) {
-                return { id, props: {} };
+            if (e.message?.includes("404") || e.message?.includes("notFound")) {
+                return { id: "", props: undefined as any };
             }
             throw e;
         }
@@ -312,14 +319,14 @@ const accountProvider: pulumi.dynamic.ResourceProvider = {
     },
 
     async diff(_id: string, olds: AccountState, news: AccountState): Promise<pulumi.dynamic.DiffResult> {
-        if (olds.accountName !== news.accountName) {
-            return { changes: true, replaces: ["accountName"], deleteBeforeReplace: true };
+        if (olds.accountName !== news.accountName || olds.emails[0] !== news.emails[0]) {
+            return { changes: true, replaces: ["accountName", "emails"], deleteBeforeReplace: true };
         }
 
         const changes =
             olds.description !== news.description ||
             olds.accountPassword !== news.accountPassword ||
-            JSON.stringify(olds.emails) !== JSON.stringify(news.emails) ||
+            JSON.stringify(olds.emails.slice(1)) !== JSON.stringify(news.emails.slice(1)) ||
             (olds.quota || 0) !== (news.quota || 0) ||
             JSON.stringify(olds.roles) !== JSON.stringify(news.roles) ||
             JSON.stringify(olds.memberOf) !== JSON.stringify(news.memberOf);

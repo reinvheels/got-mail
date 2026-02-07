@@ -2,7 +2,22 @@ import * as pulumi from "@pulumi/pulumi";
 import * as aws from "@pulumi/aws";
 import * as command from "@pulumi/command";
 import * as random from "@pulumi/random";
+import * as crypto from "crypto";
 import { Domain as StalwartDomain, Account as StalwartAccount } from "./stalwart";
+
+// SES SMTP password is derived from IAM secret key + region (SigV4 algorithm)
+// See: https://docs.aws.amazon.com/ses/latest/dg/smtp-credentials.html
+function computeSesSmtpPassword(secretAccessKey: string, region: string): string {
+    function sign(key: Buffer, msg: string): Buffer {
+        return crypto.createHmac("sha256", key).update(msg).digest();
+    }
+    let signature = sign(Buffer.from("AWS4" + secretAccessKey), "11111111");
+    signature = sign(signature, region);
+    signature = sign(signature, "ses");
+    signature = sign(signature, "aws4_request");
+    signature = sign(signature, "SendRawEmail");
+    return Buffer.concat([Buffer.from([0x04]), signature]).toString("base64");
+}
 
 // Stack configuration
 const stackName = pulumi.getStack();
@@ -92,10 +107,35 @@ const sesDkim = new aws.ses.DomainDkim("got-mail-ses-dkim", {
     domain: sesDomainIdentity.domain,
 });
 
+// SES in eu-west-1 (has production access — eu-central-1 is still sandbox)
+const sesRegion = "eu-west-1";
+const sesProvider = new aws.Provider("ses-eu-west-1", { region: sesRegion });
+
+const sesDomainIdentityEuWest1 = new aws.ses.DomainIdentity("got-mail-ses-domain-eu-west-1", {
+    domain: domainName,
+}, { provider: sesProvider });
+
+const sesDkimEuWest1 = new aws.ses.DomainDkim("got-mail-ses-dkim-eu-west-1", {
+    domain: sesDomainIdentityEuWest1.domain,
+}, { provider: sesProvider });
+
 // Create DKIM verification records in Route53
 const dkimRecords = sesDkim.dkimTokens.apply(tokens =>
     tokens.map((token, i) =>
         new aws.route53.Record(`got-mail-dkim-${i}`, {
+            zoneId: pulumi.output(hostedZone).apply(z => z.zoneId),
+            name: pulumi.interpolate`${token}._domainkey.${domainName}`,
+            type: "CNAME",
+            ttl: 600,
+            records: [pulumi.interpolate`${token}.dkim.amazonses.com`],
+        })
+    )
+);
+
+// DKIM verification records for eu-west-1
+const dkimRecordsEuWest1 = sesDkimEuWest1.dkimTokens.apply(tokens =>
+    tokens.map((token, i) =>
+        new aws.route53.Record(`got-mail-dkim-eu-west-1-${i}`, {
             zoneId: pulumi.output(hostedZone).apply(z => z.zoneId),
             name: pulumi.interpolate`${token}._domainkey.${domainName}`,
             type: "CNAME",
@@ -127,13 +167,18 @@ const sesSmtpAccessKey = new aws.iam.AccessKey("got-mail-ses-smtp-key", {
     user: sesSmtpUser.name,
 });
 
-// SES domain verification record
+// Compute SES SMTP password for eu-west-1 (password derivation is region-specific)
+const sesSmtpPasswordEuWest1 = sesSmtpAccessKey.secret.apply(
+    secret => computeSesSmtpPassword(secret, sesRegion),
+);
+
+// SES domain verification records (both regions share the same TXT record name)
 const sesVerificationRecord = new aws.route53.Record("got-mail-ses-verification", {
     zoneId: pulumi.output(hostedZone).apply(z => z.zoneId),
     name: pulumi.interpolate`_amazonses.${domainName}`,
     type: "TXT",
     ttl: 600,
-    records: [sesDomainIdentity.verificationToken],
+    records: [sesDomainIdentity.verificationToken, sesDomainIdentityEuWest1.verificationToken],
 });
 
 // =============================================================================
@@ -439,11 +484,10 @@ const builderProfile = new aws.iam.InstanceProfile("got-mail-builder-profile", {
 const builderUserData = pulumi.all([
     domainName,
     baseDomain,
-    currentRegion.then(r => r.name),
     sesSmtpAccessKey.id,
-    sesSmtpAccessKey.sesSmtpPasswordV4,
+    sesSmtpPasswordEuWest1,
     adminPassword.result,
-]).apply(([mailDomain, domain, region, smtpUser, smtpPassword, adminPass]) => `#!/bin/bash
+]).apply(([mailDomain, domain, smtpUser, smtpPassword, adminPass]) => `#!/bin/bash
 set -ex
 exec > >(tee /var/log/user-data.log) 2>&1
 
@@ -472,8 +516,11 @@ if [ ! -f /opt/stalwart/bin/stalwart ]; then
     exit 1
 fi
 
-# Stop Stalwart if the install script started it (we just want it installed, not running)
+# Stop and disable Stalwart — it must NOT auto-start on boot.
+# Runtime user data mounts the EBS data volume BEFORE starting Stalwart.
+# If Stalwart starts before EBS is mounted, it uses an empty DB on the root volume.
 systemctl stop stalwart 2>/dev/null || true
+systemctl disable stalwart 2>/dev/null || true
 
 # Write Stalwart configuration (overwrite install script defaults)
 mkdir -p /opt/stalwart/etc /opt/stalwart/logs
@@ -551,7 +598,7 @@ enable = true
 
 [queue.route.ses]
 type = "relay"
-address = "email-smtp.${region}.amazonaws.com"
+address = "email-smtp.eu-west-1.amazonaws.com"
 port = 587
 protocol = "smtp"
 
@@ -762,8 +809,8 @@ fi
 # Ensure correct ownership
 chown -R stalwart:stalwart /opt/stalwart
 
-# Start Stalwart (binary, config, and systemd unit already baked in AMI)
-systemctl start stalwart
+# Enable and start Stalwart (disabled in AMI to prevent starting before EBS mount)
+systemctl enable --now stalwart
 
 echo "Stalwart Mail Server started at $(date)"
 `);
