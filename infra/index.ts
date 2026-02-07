@@ -201,7 +201,7 @@ const dataVolume = new aws.ebs.Volume("got-mail-data-volume", {
         ...commonTags,
         Name: "got-mail-data-volume",
     },
-}, { retainOnDelete: false });
+}, { retainOnDelete: true });
 
 // Daily EBS snapshots via Data Lifecycle Manager
 if (enableSnapshots) {
