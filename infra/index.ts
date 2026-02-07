@@ -29,6 +29,8 @@ const instanceType = config.get("instanceType") || "t4g.micro";
 const keyName = config.get("keyName");
 const openSshPort = config.getBoolean("openSshPort") || false;
 const stalwartVersion = config.get("stalwartVersion") || "latest";
+const enableSnapshots = config.getBoolean("enableSnapshots") || false;
+const snapshotRetentionDays = config.getNumber("snapshotRetentionDays") || 30;
 
 interface MailAccountConfig {
     name: string;
@@ -200,6 +202,40 @@ const dataVolume = new aws.ebs.Volume("got-mail-data-volume", {
         Name: "got-mail-data-volume",
     },
 }, { retainOnDelete: false });
+
+// Daily EBS snapshots via Data Lifecycle Manager
+if (enableSnapshots) {
+    const dlmRole = new aws.iam.Role("got-mail-dlm-role", {
+        assumeRolePolicy: JSON.stringify({
+            Version: "2012-10-17",
+            Statement: [{
+                Effect: "Allow",
+                Principal: { Service: "dlm.amazonaws.com" },
+                Action: "sts:AssumeRole",
+            }],
+        }),
+        managedPolicyArns: ["arn:aws:iam::aws:policy/service-role/AWSDataLifecycleManagerServiceRole"] as any,
+        tags: commonTags,
+    });
+
+    new aws.dlm.LifecyclePolicy("got-mail-snapshot-policy", {
+        description: "Daily snapshots of got-mail data volume",
+        executionRoleArn: dlmRole.arn,
+        state: "ENABLED",
+        policyDetails: {
+            resourceTypes: ["VOLUME"],
+            targetTags: { Name: "got-mail-data-volume" },
+            schedules: [{
+                name: "daily",
+                createRule: { interval: 24, intervalUnit: "HOURS", times: "03:00" },
+                retainRule: { count: snapshotRetentionDays },
+                tagsToAdd: { ...commonTags, Name: "got-mail-data-snapshot" },
+                copyTags: true,
+            }],
+        },
+        tags: commonTags,
+    });
+}
 
 // Create an Elastic IP for stable addressing
 const eip = new aws.ec2.Eip("got-mail-eip", {
