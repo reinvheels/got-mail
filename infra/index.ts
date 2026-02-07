@@ -913,33 +913,6 @@ const mailARecord = new aws.route53.Record("got-mail-a", {
     records: [eip.publicIp],
 });
 
-// MX record for the mail subdomain
-const mxRecord = new aws.route53.Record("got-mail-mx", {
-    zoneId: pulumi.output(hostedZone).apply(z => z.zoneId),
-    name: domainName,
-    type: "MX",
-    ttl: 300,
-    records: [pulumi.interpolate`10 ${domainName}.`],
-});
-
-// SPF record for the mail subdomain
-const spfRecord = new aws.route53.Record("got-mail-spf", {
-    zoneId: pulumi.output(hostedZone).apply(z => z.zoneId),
-    name: domainName,
-    type: "TXT",
-    ttl: 300,
-    records: ["v=spf1 include:amazonses.com ~all"],
-});
-
-// DMARC record for the mail subdomain
-const dmarcRecord = new aws.route53.Record("got-mail-dmarc", {
-    zoneId: pulumi.output(hostedZone).apply(z => z.zoneId),
-    name: pulumi.interpolate`_dmarc.${domainName}`,
-    type: "TXT",
-    ttl: 300,
-    records: ["v=DMARC1; p=quarantine; rua=mailto:dmarc@" + domainName],
-});
-
 // Autoconfig/Autodiscover CNAME records (Thunderbird, Outlook)
 new aws.route53.Record("got-mail-autoconfig", {
     zoneId: pulumi.output(hostedZone).apply(z => z.zoneId),
@@ -956,6 +929,33 @@ new aws.route53.Record("got-mail-autodiscover", {
     ttl: 300,
     records: [domainName],
 });
+
+// --- Per mail-domain DNS records ---
+for (const md of mailDomains) {
+    new aws.route53.Record(`got-mail-mx-${md}`, {
+        zoneId: pulumi.output(hostedZone).apply(z => z.zoneId),
+        name: md,
+        type: "MX",
+        ttl: 300,
+        records: [pulumi.interpolate`10 ${domainName}.`],
+    });
+
+    new aws.route53.Record(`got-mail-spf-${md}`, {
+        zoneId: pulumi.output(hostedZone).apply(z => z.zoneId),
+        name: md,
+        type: "TXT",
+        ttl: 300,
+        records: ["v=spf1 include:amazonses.com ~all"],
+    });
+
+    new aws.route53.Record(`got-mail-dmarc-${md}`, {
+        zoneId: pulumi.output(hostedZone).apply(z => z.zoneId),
+        name: `_dmarc.${md}`,
+        type: "TXT",
+        ttl: 300,
+        records: [`v=DMARC1; p=quarantine; rua=mailto:dmarc@${md}`],
+    });
+}
 
 // SRV records for mail client auto-setup (RFC 6186)
 new aws.route53.Record("got-mail-srv-imaps", {
