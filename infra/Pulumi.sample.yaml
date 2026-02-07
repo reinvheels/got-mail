@@ -5,15 +5,42 @@
 config:
   # AWS Configuration
   aws:region: eu-central-1
-  # aws:profile: default  # Optional: AWS CLI profile
 
-  # Domain Configuration (required)
-  # Route53 hosted zone is auto-discovered from the domain name
+  # Mail server hostname (required) — A record, ACME cert, SRV records
   got-mail:domainName: mail.example.com
 
-  # Lambda Configuration
-  # got-mail:memorySize: 512  # Default: 512 MB
-  # got-mail:timeout: 900     # Default: 900 seconds (15 min max)
+  # Mail domains to serve (required) — MX, SPF, DMARC records created per domain
+  got-mail:mailDomains:
+    - mail.example.com
+    - example.com
 
-# Note: Admin password is auto-generated and stored in AWS SSM Parameter Store
-# Retrieve it with: aws ssm get-parameter --name /got-mail/<stack>/admin-password --with-decryption
+  # Mailbox accounts (required)
+  got-mail:mailAccounts:
+    - name: admin
+      email: admin@example.com
+      displayName: Admin
+      roles:
+        - admin
+    - name: user
+      email: user@example.com
+      displayName: Example User
+      roles:
+        - user
+
+  # EC2 key pair for SSH access (optional)
+  # got-mail:keyName: my-keypair
+  # got-mail:openSshPort: "true"
+
+  # Instance type (optional, default: t4g.micro)
+  # got-mail:instanceType: t4g.micro
+
+  # Stalwart version (optional, default: latest)
+  # got-mail:stalwartVersion: latest
+
+  # Daily EBS snapshots (optional, default: false)
+  # got-mail:enableSnapshots: "true"
+  # got-mail:snapshotRetentionDays: 30
+
+# Note: Passwords are auto-generated and stored in AWS SSM Parameter Store
+# Admin:    aws ssm get-parameter --name /got-mail/<stack>/stalwart/admin-password --with-decryption
+# Accounts: aws ssm get-parameter --name /got-mail/<stack>/stalwart/accounts/<name>/password --with-decryption

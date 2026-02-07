@@ -137,6 +137,7 @@ For personal email, this is acceptable - mail queues retry.
 |-----------|---------|
 | EC2 t4g.micro spot | ~$2.50 |
 | EBS 10GB gp3 | ~$0.80 |
+| EBS snapshots (daily, 30d) | ~$0.10 |
 | Elastic IP | Free (attached) |
 | SES ($0.10/1000) | ~$0.10 |
 | Data transfer | ~$0.50 |
@@ -157,11 +158,15 @@ puc push prod     # push config to SSM
 ```
 
 Key config values:
-- `got-mail:domainName` — primary mail server hostname (e.g. `gotmx.gothub.io`)
-- `got-mail:mailDomains` — list of mail domains to create in Stalwart
+- `got-mail:domainName` — mail server hostname (e.g. `mail.gothub.io`)
+- `got-mail:mailDomains` — list of mail domains to create in Stalwart (MX/SPF/DMARC per domain)
 - `got-mail:mailAccounts` — list of mailbox accounts (name, email, displayName, roles)
 - `got-mail:keyName` — EC2 key pair name for SSH access
 - `got-mail:openSshPort` — whether to open port 22
+- `got-mail:enableSnapshots` — enable daily EBS snapshots via DLM (default: false)
+- `got-mail:snapshotRetentionDays` — number of daily snapshots to retain (default: 30)
+- `got-mail:instanceType` — EC2 instance type (default: t4g.micro)
+- `got-mail:stalwartVersion` — Stalwart version to install (default: latest)
 
 ### Passwords & Secrets
 
@@ -180,11 +185,12 @@ The admin password is also baked into the AMI config at build time.
 - EBS volume for data persistence (retainOnDelete)
 - Elastic IP
 - Security group (25, 80, 143, 443, 465, 587, 993, 8080)
-- SES domain identity + DKIM
-- IAM user with SMTP credentials for SES relay
-- Route53 records (MX, SPF, DKIM, DMARC, autodiscover, autoconfig, SRV)
+- SES domain identity + DKIM (eu-central-1 + eu-west-1 for production sending)
+- IAM user with SMTP credentials for SES relay (eu-west-1)
+- Route53 records (per-domain MX, SPF, DMARC; DKIM, autodiscover, autoconfig, SRV)
 - S3 bucket for backups
 - IAM role for EC2 (EIP association, EBS attach, S3 backup)
+- DLM lifecycle policy for daily EBS snapshots (optional)
 - Stalwart dynamic provider (`stalwart.ts`) — Pulumi CRUD for domains and accounts via REST API
 
 ### Files
