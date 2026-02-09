@@ -1055,6 +1055,7 @@ const stalwartDomains = mailDomains.map(domain => {
     return new StalwartDomain(`stalwart-domain-${domain}`, {
         ...stalwartAuth,
         domainName: domain,
+        description: "",
     }, { dependsOn: [asg] });
 });
 
@@ -1079,6 +1080,8 @@ for (const account of mailAccounts) {
         accountPassword: password.result,
         emails: [account.email],
         roles: account.roles || ["user"],
+        quota: 0,
+        memberOf: [],
     }, { dependsOn: stalwartDomains });
 }
 

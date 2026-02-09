@@ -118,7 +118,7 @@ const domainProvider: pulumi.dynamic.ResourceProvider = {
                 props: {
                     ...props,
                     domainName: resp.data.name,
-                    description: resp.data.description || "",
+                    description: resp.data.description ?? props.description ?? "",
                     stalwartId: resp.data.id,
                 },
             };
@@ -265,9 +265,9 @@ const accountProvider: pulumi.dynamic.ResourceProvider = {
                     // Keep the input password — we can't reverse the hash
                     accountPassword: props.accountPassword,
                     emails: Array.isArray(d.emails) ? d.emails : d.emails ? [d.emails] : [],
-                    quota: d.quota || 0,
-                    roles: d.roles || [],
-                    memberOf: d.memberOf || [],
+                    quota: d.quota ?? props.quota ?? 0,
+                    roles: d.roles ?? props.roles ?? [],
+                    memberOf: d.memberOf ?? props.memberOf ?? [],
                     stalwartId: d.id,
                 },
             };

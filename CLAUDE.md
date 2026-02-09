@@ -207,6 +207,18 @@ The admin password is also baked into the AMI config at build time.
 - DLM lifecycle policy for daily EBS snapshots (optional)
 - Stalwart dynamic provider (`stalwart.ts`) — Pulumi CRUD for domains and accounts via REST API
 
+### Stalwart Dynamic Provider (`stalwart.ts`)
+
+Pulumi dynamic provider for managing Stalwart domains and accounts via REST API. Key gotchas:
+
+**Stalwart PATCH API is not truly partial.** Fields omitted from a PATCH request get reset to null/empty. The `update` function must always PATCH all non-secret fields (description, emails, quota, roles, memberOf) to prevent data loss. Secrets are only PATCHed when the password actually changes.
+
+**Pulumi dynamic providers trigger spurious updates.** Any code change in the project causes the serialized provider implementation to differ, which Pulumi treats as a change on all dynamic resources. The always-PATCH approach ensures these spurious updates are harmless.
+
+**The `read` function must use `??` with `props` fallbacks.** Stalwart's GET API omits fields that are null/empty (e.g., roles, memberOf, quota). Using `||` with hardcoded defaults (like `[]` or `0`) introduces fields not present in the original inputs, causing an infinite refresh/up cycle. Use `d.field ?? props.field ?? default` to preserve existing state when the API doesn't return a field.
+
+**All optional fields must be passed explicitly in `index.ts`.** If `memberOf` or `quota` are omitted from inputs (left as `undefined`), they'll mismatch the `read` output (which returns `[]`/`0`), causing spurious diffs. Always pass defaults: `quota: 0`, `memberOf: []`, `description: ""`.
+
 ### Files
 - `index.ts` — main infrastructure (AWS resources, AMI builder, Stalwart resources)
 - `stalwart.ts` — Pulumi dynamic provider for Stalwart Domain and Account resources
