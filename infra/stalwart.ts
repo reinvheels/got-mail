@@ -281,30 +281,21 @@ const accountProvider: pulumi.dynamic.ResourceProvider = {
 
     async update(id: string, olds: AccountState, news: AccountState): Promise<pulumi.dynamic.UpdateResult> {
         const conn = getConn(news);
-        const patches: { action: string; field: string; value: unknown }[] = [];
+        // Always PATCH non-secret fields to ensure consistency, even on spurious updates
+        const patches: { action: string; field: string; value: unknown }[] = [
+            { action: "set", field: "description", value: news.description || "" },
+            { action: "set", field: "emails", value: news.emails },
+            { action: "set", field: "quota", value: news.quota || 0 },
+            { action: "set", field: "roles", value: news.roles || ["user"] },
+            { action: "set", field: "memberOf", value: news.memberOf || [] },
+        ];
 
-        if (olds.description !== news.description) {
-            patches.push({ action: "set", field: "description", value: news.description || "" });
-        }
+        // Only update password when it actually changed
         if (olds.accountPassword !== news.accountPassword) {
             patches.push({ action: "set", field: "secrets", value: [news.accountPassword] });
         }
-        if (JSON.stringify(olds.emails) !== JSON.stringify(news.emails)) {
-            patches.push({ action: "set", field: "emails", value: news.emails });
-        }
-        if ((olds.quota || 0) !== (news.quota || 0)) {
-            patches.push({ action: "set", field: "quota", value: news.quota || 0 });
-        }
-        if (JSON.stringify(olds.roles) !== JSON.stringify(news.roles)) {
-            patches.push({ action: "set", field: "roles", value: news.roles || ["user"] });
-        }
-        if (JSON.stringify(olds.memberOf) !== JSON.stringify(news.memberOf)) {
-            patches.push({ action: "set", field: "memberOf", value: news.memberOf || [] });
-        }
 
-        if (patches.length > 0) {
-            await stalwartFetch(conn, "PATCH", `/api/principal/${encodeURIComponent(id)}`, patches);
-        }
+        await stalwartFetch(conn, "PATCH", `/api/principal/${encodeURIComponent(id)}`, patches);
 
         return { outs: { ...news, stalwartId: olds.stalwartId } };
     },
