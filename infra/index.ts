@@ -941,6 +941,26 @@ const asg = new aws.autoscaling.Group("got-mail-asg", {
     waitForCapacityTimeout: "10m",
 });
 
+// Nightly instance recycle — terminate at 00:00 UTC, relaunch at 00:02 UTC
+// This lets the ASG pick the cheapest spot pool available
+new aws.autoscaling.Schedule("got-mail-nightly-down", {
+    autoscalingGroupName: asg.name,
+    scheduledActionName: "nightly-scale-down",
+    recurrence: "0 0 * * *",
+    desiredCapacity: 0,
+    minSize: 0,
+    maxSize: 1,
+});
+
+new aws.autoscaling.Schedule("got-mail-nightly-up", {
+    autoscalingGroupName: asg.name,
+    scheduledActionName: "nightly-scale-up",
+    recurrence: "2 0 * * *",
+    desiredCapacity: 1,
+    minSize: 0,
+    maxSize: 1,
+});
+
 // =============================================================================
 // DNS Records
 // =============================================================================
