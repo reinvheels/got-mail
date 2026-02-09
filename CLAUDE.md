@@ -61,7 +61,7 @@ Hybrid approach: EC2 for IMAP/receiving, SES for sending (deliverability).
 └────────┬────────┘
          │
 ┌────────▼────────┐
-│   EC2 Spot      │  ◄── t4g.micro (~$2.50/mo)
+│   EC2 Spot      │  ◄── t4g.nano/micro/small
 │   (Stalwart)    │
 └────────┬────────┘
          │
@@ -119,29 +119,43 @@ domains = ["mail.example.com"]
 
 Stalwart uses TLS-ALPN-01 challenge via port 443. Port 80 is also open for ACME fallback. Certs are stored in RocksDB on EBS, so they persist across instance replacements.
 
-### Spot Interruption Recovery
+### Spot Instance Strategy
 
-EC2 spot instances can be interrupted (~5% monthly). Recovery via ASG:
+ASG uses a mixed instances policy with `price-capacity-optimized` allocation across multiple instance types (t4g.nano, t4g.micro, t4g.small). This prefers the cheapest pool with available capacity.
+
+A nightly recycle (00:00 UTC terminate, 00:02 UTC relaunch) ensures the ASG can switch to a cheaper pool when capacity returns.
+
+**Spot interruption recovery:**
 
 1. Spot interruption (2 min warning)
-2. ASG launches new spot instance
+2. ASG launches new spot instance from cheapest available pool
 3. EBS volume reattached
 4. Elastic IP reassociated
 5. Stalwart resumes (~1-2 min total downtime)
 
 For personal email, this is acceptable - mail queues retry.
 
+**Check instance type history (via CloudTrail, 90 days):**
+
+```bash
+aws cloudtrail lookup-events \
+  --lookup-attributes AttributeKey=EventName,AttributeValue=RunInstances \
+  --start-time "2026-01-01T00:00:00Z" \
+  --query 'Events[*].CloudTrailEvent' --output json --region eu-central-1 \
+  | jq -r '.[] | fromjson | select(.responseElements.instancesSet.items[]?.tagSet.items[]?.value == "got-mail-instance") | "\(.eventTime) \(.responseElements.instancesSet.items[0].instanceType)"'
+```
+
 ### Cost Estimate
 
 | Component | Monthly |
 |-----------|---------|
-| EC2 t4g.micro spot | ~$2.50 |
+| EC2 spot (t4g.nano/micro/small) | ~$0.90-5.00 |
 | EBS 10GB gp3 | ~$0.80 |
 | EBS snapshots (daily, 30d) | ~$0.10 |
-| Elastic IP | Free (attached) |
+| Elastic IP (public IPv4) | ~$3.60 |
 | SES ($0.10/1000) | ~$0.10 |
 | Data transfer | ~$0.50 |
-| **Total** | **~$4-5/mo** |
+| **Total** | **~$6-11/mo** |
 
 ## Implementation
 

@@ -13,13 +13,14 @@ Personal email service on AWS using EC2 spot instances and [Stalwart Mail Server
 - Auto-generated passwords stored in AWS SSM
 - Daily EBS snapshots with configurable retention
 - TLS via Let's Encrypt (ACME, auto-renewed)
+- Multi-pool spot instances (t4g.nano/micro/small) with nightly recycle
 - Spot interruption recovery (~1-2 min downtime)
 
 ## Architecture
 
 Hybrid: EC2 spot for IMAP/receiving, SES for sending.
 
-- **EC2 Spot**: Runs Stalwart via custom AMI (t4g.micro ~$2.50/mo)
+- **EC2 Spot**: Runs Stalwart via custom AMI (t4g.nano/micro/small, price-capacity-optimized)
 - **SES**: Outbound relay via eu-west-1 (deliverability, reputation)
 - **EBS**: Stalwart data persistence (RocksDB)
 - **DLM**: Daily EBS snapshots (optional, 30-day retention)
@@ -68,6 +69,18 @@ aws ssm get-parameter --name /got-mail/<stack>/stalwart/admin-password --with-de
 
 # Account password
 aws ssm get-parameter --name /got-mail/<stack>/stalwart/accounts/<name>/password --with-decryption
+```
+
+## Operations
+
+Check which instance types have been deployed (via CloudTrail, 90 days):
+
+```bash
+aws cloudtrail lookup-events \
+  --lookup-attributes AttributeKey=EventName,AttributeValue=RunInstances \
+  --start-time "2026-01-01T00:00:00Z" \
+  --query 'Events[*].CloudTrailEvent' --output json --region eu-central-1 \
+  | jq -r '.[] | fromjson | select(.responseElements.instancesSet.items[]?.tagSet.items[]?.value == "got-mail-instance") | "\(.eventTime) \(.responseElements.instancesSet.items[0].instanceType)"'
 ```
 
 See [CLAUDE.md](CLAUDE.md) for detailed architecture documentation.
