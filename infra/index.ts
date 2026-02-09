@@ -927,7 +927,7 @@ const asg = new aws.autoscaling.Group("got-mail-asg", {
         instancesDistribution: {
             onDemandBaseCapacity: 0,
             onDemandPercentageAboveBaseCapacity: 0,
-            spotAllocationStrategy: "capacity-optimized",
+            spotAllocationStrategy: "price-capacity-optimized",
         },
     },
     healthCheckType: "EC2",
