@@ -869,20 +869,11 @@ const asgSubnetId = pulumi.all([defaultVpc, dataAvailabilityZone]).apply(async (
 // Create Launch Template for ASG
 const launchTemplate = new aws.ec2.LaunchTemplate("got-mail-launch-template", {
     imageId: customAmiId,
-    instanceType: instanceType,
     keyName: keyName,
     vpcSecurityGroupIds: [securityGroup.id],
     userData: userData.apply(ud => Buffer.from(ud).toString("base64")),
     iamInstanceProfile: {
         arn: instanceProfile.arn,
-    },
-    // Always use spot for mail server (cost savings)
-    instanceMarketOptions: {
-        marketType: "spot",
-        spotOptions: {
-            spotInstanceType: "one-time",
-            instanceInterruptionBehavior: "terminate",
-        },
     },
     blockDeviceMappings: [{
         deviceName: "/dev/xvda",
@@ -921,9 +912,23 @@ const asg = new aws.autoscaling.Group("got-mail-asg", {
     maxSize: 1,
     desiredCapacity: 1,
     vpcZoneIdentifiers: [asgSubnetId],
-    launchTemplate: {
-        id: launchTemplate.id,
-        version: "$Latest",
+    mixedInstancesPolicy: {
+        launchTemplate: {
+            launchTemplateSpecification: {
+                launchTemplateId: launchTemplate.id,
+                version: "$Latest",
+            },
+            overrides: [
+                { instanceType: "t4g.nano" },
+                { instanceType: "t4g.micro" },
+                { instanceType: "t4g.small" },
+            ],
+        },
+        instancesDistribution: {
+            onDemandBaseCapacity: 0,
+            onDemandPercentageAboveBaseCapacity: 0,
+            spotAllocationStrategy: "capacity-optimized",
+        },
     },
     healthCheckType: "EC2",
     healthCheckGracePeriod: 300,
