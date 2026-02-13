@@ -35,6 +35,7 @@ const snapshotRetentionDays = config.getNumber("snapshotRetentionDays") || 30;
 interface MailAccountConfig {
     name: string;
     email: string;
+    aliases?: string[];
     displayName?: string;
     roles?: string[];
 }
@@ -230,7 +231,7 @@ if (enableSnapshots) {
                 createRule: { interval: 24, intervalUnit: "HOURS", times: "03:00" },
                 retainRule: { count: snapshotRetentionDays },
                 tagsToAdd: { ...commonTags, Name: "got-mail-data-snapshot" },
-                copyTags: true,
+                copyTags: false,
             }],
         },
         tags: commonTags,
@@ -1078,7 +1079,7 @@ for (const account of mailAccounts) {
         accountName: account.name,
         description: account.displayName || "",
         accountPassword: password.result,
-        emails: [account.email],
+        emails: [account.email, ...(account.aliases || []).sort()],
         roles: account.roles || ["user"],
         quota: 0,
         memberOf: [],

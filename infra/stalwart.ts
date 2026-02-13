@@ -264,7 +264,9 @@ const accountProvider: pulumi.dynamic.ResourceProvider = {
                     description: d.description || "",
                     // Keep the input password — we can't reverse the hash
                     accountPassword: props.accountPassword,
-                    emails: Array.isArray(d.emails) ? d.emails : d.emails ? [d.emails] : [],
+                    emails: Array.isArray(d.emails)
+                        ? [d.emails[0], ...d.emails.slice(1).sort()]
+                        : d.emails ? [d.emails] : [],
                     quota: d.quota ?? props.quota ?? 0,
                     roles: d.roles ?? props.roles ?? [],
                     memberOf: d.memberOf ?? props.memberOf ?? [],
@@ -317,7 +319,7 @@ const accountProvider: pulumi.dynamic.ResourceProvider = {
         const changes =
             olds.description !== news.description ||
             olds.accountPassword !== news.accountPassword ||
-            JSON.stringify(olds.emails.slice(1)) !== JSON.stringify(news.emails.slice(1)) ||
+            JSON.stringify([...olds.emails.slice(1)].sort()) !== JSON.stringify([...news.emails.slice(1)].sort()) ||
             (olds.quota || 0) !== (news.quota || 0) ||
             JSON.stringify(olds.roles) !== JSON.stringify(news.roles) ||
             JSON.stringify(olds.memberOf) !== JSON.stringify(news.memberOf);
